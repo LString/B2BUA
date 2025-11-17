@@ -1,3 +1,4 @@
+#include <pjsua-lib/pjsua.h>
 #include <pjsua2.hpp>
 #include <iostream>
 
@@ -108,6 +109,52 @@ private:
     bool     mediaBridged;
 };
 
+static pj_bool_t registrar_on_rx_request(pjsip_rx_data *rdata);
+
+static pjsip_module registrar_mod = {
+    nullptr,
+    nullptr,
+    {"simple-registrar", 16},
+    -1,
+    PJSIP_MOD_PRIORITY_APPLICATION + 1,
+    nullptr,
+    nullptr,
+    nullptr,
+    nullptr,
+    &registrar_on_rx_request,
+    nullptr,
+    nullptr,
+    nullptr,
+    nullptr
+};
+
+static pj_bool_t registrar_on_rx_request(pjsip_rx_data *rdata) {
+    if (pjsip_method_cmp(&rdata->msg_info.msg->line.req.method, &pjsip_register_method) != 0) {
+        return PJ_FALSE;
+    }
+
+    pjsip_tx_data *tdata = nullptr;
+    pj_status_t status = pjsip_endpt_create_response(pjsua_get_pjsip_endpt(), rdata, PJSIP_SC_OK, nullptr, &tdata);
+    if (status != PJ_SUCCESS || !tdata) {
+        return PJ_FALSE;
+    }
+
+    pjsip_contact_hdr *contact_hdr = (pjsip_contact_hdr *)pjsip_msg_find_hdr(rdata->msg_info.msg, PJSIP_H_CONTACT, nullptr);
+    if (contact_hdr) {
+        pjsip_contact_hdr *cloned = (pjsip_contact_hdr *)pjsip_hdr_clone(tdata->pool, (pjsip_hdr *)contact_hdr);
+        pjsip_msg_add_hdr(tdata->msg, (pjsip_hdr *)cloned);
+    }
+
+    pjsip_expires_hdr *expires_hdr = (pjsip_expires_hdr *)pjsip_msg_find_hdr(rdata->msg_info.msg, PJSIP_H_EXPIRES, nullptr);
+    if (expires_hdr) {
+        pjsip_expires_hdr *cloned = (pjsip_expires_hdr *)pjsip_hdr_clone(tdata->pool, (pjsip_hdr *)expires_hdr);
+        pjsip_msg_add_hdr(tdata->msg, (pjsip_hdr *)cloned);
+    }
+
+    pjsip_endpt_send_response2(pjsua_get_pjsip_endpt(), rdata, tdata, nullptr, nullptr);
+    return PJ_TRUE;
+}
+
 void B2bAccount::onIncomingCall(OnIncomingCallParam &iprm) {
     cout << "=== Incoming call from Linphone side ===" << endl;
 
@@ -163,6 +210,11 @@ int main() {
 
         EpConfig epCfg;
         ep.libInit(epCfg);
+
+        pj_status_t regStatus = pjsip_endpt_register_module(pjsua_get_pjsip_endpt(), &registrar_mod);
+        if (regStatus != PJ_SUCCESS) {
+            throw Error(regStatus, "Registrar registration failed", "", "", 0);
+        }
 
         // B2BUA 不使用本机声卡，而是 null audio device
         ep.audDevManager().setNullDev();
