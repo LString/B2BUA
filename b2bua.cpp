@@ -1,5 +1,7 @@
 #include <pjsua2.hpp>
+#include <pjsua-lib/pjsua.h>
 #include <iostream>
+#include <string>
 
 using namespace pj;
 using namespace std;
@@ -11,6 +13,52 @@ enum LegRole {
 };
 
 class B2bCall;
+
+// 简易 registrar：对所有 REGISTER 请求直接回复 200 OK
+static pjsip_endpoint *g_endpt = nullptr;
+static pjsip_module registrar_mod = {};
+
+static pj_bool_t registrar_on_rx_request(pjsip_rx_data *rdata)
+{
+    if (pjsip_method_cmp(&rdata->msg_info.msg->line.req.method, &pjsip_register_method) != 0)
+        return PJ_FALSE;
+
+    pjsip_tx_data *tdata = nullptr;
+    pj_status_t status = pjsip_endpt_create_response(g_endpt, rdata, PJSIP_SC_OK, nullptr, &tdata);
+    if (status != PJ_SUCCESS) {
+        cout << "Failed to create REGISTER response, status=" << status << endl;
+        return PJ_FALSE;
+    }
+
+    status = pjsip_endpt_send_response2(g_endpt, rdata, tdata, nullptr, nullptr);
+    if (status != PJ_SUCCESS) {
+        cout << "Failed to send REGISTER response, status=" << status << endl;
+    } else {
+        auto &from = rdata->msg_info.from->uri;
+        cout << "Replied 200 OK to REGISTER from "
+             << string(from.ptr, from.slen) << endl;
+    }
+
+    return PJ_TRUE;
+}
+
+static void register_registrar_module()
+{
+    g_endpt = pjsua_get_pjsip_endpoint();
+    if (!g_endpt)
+        throw Error("register_registrar_module", PJ_ENOTINITIALIZED);
+
+    registrar_mod.name = pj_str(const_cast<char*>("b2bua-registrar"));
+    registrar_mod.id = -1;
+    registrar_mod.priority = PJSIP_MOD_PRIORITY_APPLICATION + 1;
+    registrar_mod.on_rx_request = &registrar_on_rx_request;
+
+    pj_status_t status = pjsip_endpt_register_module(g_endpt, &registrar_mod);
+    if (status != PJ_SUCCESS)
+        throw Error("pjsip_endpt_register_module", status);
+
+    cout << "Registrar module ready: will answer REGISTER with 200 OK" << endl;
+}
 
 class B2bAccount : public Account {
 public:
@@ -171,6 +219,9 @@ int main() {
         TransportConfig tcfg;
         tcfg.port = 5060;
         ep.transportCreate(PJSIP_TRANSPORT_UDP, tcfg);
+
+        // 注册本地 registrar 模块，Linphone 侧 REGISTER 会收到 200 OK
+        register_registrar_module();
 
         ep.libStart();
         cout << "*** B2BUA started on udp:" << B2BUA_IP << ":5060 ***" << endl;
