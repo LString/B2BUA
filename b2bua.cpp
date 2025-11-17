@@ -125,9 +125,6 @@ static pjsip_module registrar_mod = {
     nullptr,
     nullptr,
     nullptr,
-    nullptr,
-    nullptr,
-    nullptr,
     nullptr
 };
 
@@ -216,7 +213,7 @@ int main() {
 
         pj_status_t regStatus = pjsip_endpt_register_module(pjsua_get_pjsip_endpt(), &registrar_mod);
         if (regStatus != PJ_SUCCESS) {
-            throw Error("Registrar registration failed", regStatus);
+            throw Error(regStatus, "Registrar registration failed", "", "", 0);
         }
 
         // B2BUA 不使用本机声卡，而是 null audio device
