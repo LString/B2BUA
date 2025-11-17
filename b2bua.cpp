@@ -1,6 +1,8 @@
 #include <pjsua-lib/pjsua.h>
 #include <pjsua2.hpp>
+#include <chrono>
 #include <iostream>
+#include <thread>
 
 using namespace pj;
 using namespace std;
@@ -27,11 +29,25 @@ public:
         : Call(acc, call_id),
           other(nullptr),
           role(ROLE_UNKNOWN),
-          mediaBridged(false)
+          mediaBridged(false),
+          promptNeeded(false),
+          promptStarted(false),
+          bridgeAllowed(true),
+          hasPendingDial(false)
     {}
 
     void setOther(B2bCall *o) { other = o; }
     void setRole(LegRole r)   { role = r; }
+    void enablePrompt(const string &file) {
+        promptNeeded = true;
+        promptFile = file;
+        bridgeAllowed = false;
+    }
+    void setPendingDial(const string &uri) {
+        pendingUri = uri;
+        hasPendingDial = true;
+    }
+    bool isBridgeAllowed() const { return bridgeAllowed; }
 
     virtual void onCallState(OnCallStateParam &prm) override {
         CallInfo ci = getInfo();
@@ -79,7 +95,34 @@ public:
             {
                 cout << "Media ready on leg (role=" << role << ")" << endl;
 
+                if (role == ROLE_LINPHONE && promptNeeded && !promptStarted) {
+                    try {
+                        promptPlayer.createPlayer(promptFile);
+
+                        AudioMedia callMed = getAudioMedia(i);
+                        promptPlayer.startTransmit(callMed);
+                        promptStarted = true;
+
+                        std::thread([this]() {
+                            while (promptPlayer.isPlaying()) {
+                                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                            }
+                            bridgeAllowed = true;
+                            promptNeeded = false;
+                            startPendingDial();
+                        }).detach();
+                    } catch (Error &err) {
+                        cout << "Failed to play prompt: " << err.info() << endl;
+                        bridgeAllowed = true;
+                        promptNeeded = false;
+                        startPendingDial();
+                    }
+                }
+
                 if (!other || mediaBridged)
+                    return;
+
+                if (!bridgeAllowed || !other->isBridgeAllowed())
                     return;
 
                 CallInfo oci = other->getInfo();
@@ -107,6 +150,31 @@ private:
     B2bCall *other;
     LegRole  role;
     bool     mediaBridged;
+    AudioMediaPlayer promptPlayer;
+    bool promptNeeded;
+    bool promptStarted;
+    bool bridgeAllowed;
+    bool hasPendingDial;
+    string promptFile;
+    string pendingUri;
+
+    void startPendingDial() {
+        if (!hasPendingDial || !other)
+            return;
+
+        CallOpParam callPrm(true);
+        try {
+            cout << "Dialing " << pendingUri << " on Asterisk side..." << endl;
+            other->makeCall(pendingUri, callPrm);
+        } catch (Error &err) {
+            cout << "makeCall() failed: " << err.info() << endl;
+            CallOpParam prm;
+            prm.statusCode = PJSIP_SC_INTERNAL_SERVER_ERROR;
+            hangup(prm);
+        }
+
+        hasPendingDial = false;
+    }
 };
 
 static pj_bool_t registrar_on_rx_request(pjsip_rx_data *rdata);
@@ -160,6 +228,7 @@ void B2bAccount::onIncomingCall(OnIncomingCallParam &iprm) {
 
     auto *incoming = new B2bCall(*this, iprm.callId);
     incoming->setRole(ROLE_LINPHONE);
+    incoming->enablePrompt("unsafe_hit.wav");
 
     if (!remoteAcc) {
         cout << "No remote (Asterisk) account configured, rejecting call" << endl;
@@ -178,22 +247,12 @@ void B2bAccount::onIncomingCall(OnIncomingCallParam &iprm) {
 
     // 目前“最简”：把所有来电都固定拨到 1002
     string dstUri = "sip:1002@10.0.6.91"; // TODO: 根据你实际 Asterisk IP 修改
-    CallOpParam callPrm(true); // 使用默认音频设置
-    try {
-        cout << "Dialing " << dstUri << " on Asterisk side..." << endl;
-        outgoing->makeCall(dstUri, callPrm);
-    } catch (Error &err) {
-        cout << "makeCall() failed: " << err.info() << endl;
-        CallOpParam prm;
-        prm.statusCode = PJSIP_SC_INTERNAL_SERVER_ERROR;
-        incoming->hangup(prm);
-        return;
-    }
+    incoming->setPendingDial(dstUri);
 
-    // 先给 Linphone 回 180 Ringing
-    CallOpParam ringPrm;
-    ringPrm.statusCode = PJSIP_SC_RINGING;
-    incoming->answer(ringPrm);
+    // 先给 Linphone 回 200 OK 以便播放提示音
+    CallOpParam ansPrm;
+    ansPrm.statusCode = PJSIP_SC_OK;
+    incoming->answer(ansPrm);
 }
 
 int main() {
