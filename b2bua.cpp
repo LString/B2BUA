@@ -2,6 +2,7 @@
 #include <pjsua-lib/pjsua.h>
 #include <iostream>
 #include <string>
+#include <algorithm>
 
 using namespace pj;
 using namespace std;
@@ -34,9 +35,15 @@ static pj_bool_t registrar_on_rx_request(pjsip_rx_data *rdata)
     if (status != PJ_SUCCESS) {
         cout << "Failed to send REGISTER response, status=" << status << endl;
     } else {
-        auto &from = rdata->msg_info.from->uri;
-        cout << "Replied 200 OK to REGISTER from "
-             << string(from.ptr, from.slen) << endl;
+        char uri_buf[PJSIP_MAX_URL_SIZE];
+        auto *from = rdata->msg_info.from->uri;
+        int printed = pjsip_uri_print(PJSIP_URI_IN_FROMTO_HDR, from, uri_buf, sizeof(uri_buf));
+        if (printed > 0) {
+            uri_buf[min<int>(printed, static_cast<int>(sizeof(uri_buf) - 1))] = '\0';
+            cout << "Replied 200 OK to REGISTER from " << uri_buf << endl;
+        } else {
+            cout << "Replied 200 OK to REGISTER (failed to format From URI)" << endl;
+        }
     }
 
     return PJ_TRUE;
@@ -44,9 +51,9 @@ static pj_bool_t registrar_on_rx_request(pjsip_rx_data *rdata)
 
 static void register_registrar_module()
 {
-    g_endpt = pjsua_get_pjsip_endpoint();
+    g_endpt = pjsua_get_pjsip_endpt();
     if (!g_endpt)
-        throw Error("register_registrar_module", PJ_ENOTINITIALIZED);
+        throw Error(PJSIP_ENOTINITIALIZED, "register_registrar_module", __FILE__, __LINE__);
 
     registrar_mod.name = pj_str(const_cast<char*>("b2bua-registrar"));
     registrar_mod.id = -1;
@@ -55,7 +62,7 @@ static void register_registrar_module()
 
     pj_status_t status = pjsip_endpt_register_module(g_endpt, &registrar_mod);
     if (status != PJ_SUCCESS)
-        throw Error("pjsip_endpt_register_module", status);
+        throw Error(status, "pjsip_endpt_register_module", __FILE__, __LINE__);
 
     cout << "Registrar module ready: will answer REGISTER with 200 OK" << endl;
 }
