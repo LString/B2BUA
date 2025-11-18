@@ -49,7 +49,7 @@ public:
             tone[0].on_msec = 2000;
             tone[0].off_msec = 4000;
 
-            ringback.start(tone, 1, true);
+            ringback.play(tone, 1, true);
 
             AudioMedia callMed = getAudioMedia(-1);
             ringback.startTransmit(callMed);
@@ -72,7 +72,6 @@ public:
 
         try {
             ringback.stop();
-            ringback.deleteToneGenerator();
         } catch (Error &err) {
             cout << "Failed to stop ringback: " << err.info() << endl;
         }
@@ -165,10 +164,11 @@ private:
 
 static pj_bool_t registrar_on_rx_request(pjsip_rx_data *rdata);
 
+static char registrar_mod_name[] = "simple-registrar";
 static pjsip_module registrar_mod = {
     nullptr,
     nullptr,
-    {"simple-registrar", 16},
+    {registrar_mod_name, 16},
     -1,
     PJSIP_MOD_PRIORITY_APPLICATION + 1,
     nullptr,
@@ -247,16 +247,15 @@ void B2bAccount::onIncomingCall(OnIncomingCallParam &iprm) {
     }
 
     if (incomingMedia) {
-        try {
-            AudioMediaPlayer player;
-            player.createPlayer("unsafe_hint.wav", 0);
-            player.startTransmit(*incomingMedia);
-            this_thread::sleep_for(chrono::seconds(3));
-            player.stopTransmit(*incomingMedia);
-            player.close();
-        } catch (Error &err) {
-            cout << "Failed to play hint: " << err.info() << endl;
-        }
+            try {
+                AudioMediaPlayer player;
+                player.createPlayer("unsafe_hint.wav", 0);
+                player.startTransmit(*incomingMedia);
+                this_thread::sleep_for(chrono::seconds(3));
+                player.stopTransmit(*incomingMedia);
+            } catch (Error &err) {
+                cout << "Failed to play hint: " << err.info() << endl;
+            }
 
         delete incomingMedia;
         incomingMedia = nullptr;
