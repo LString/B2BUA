@@ -1,6 +1,7 @@
 #include <pjsua-lib/pjsua.h>
 #include <pjsua2.hpp>
 #include <iostream>
+#include <thread>
 
 using namespace pj;
 using namespace std;
@@ -178,22 +179,68 @@ void B2bAccount::onIncomingCall(OnIncomingCallParam &iprm) {
 
     // 目前“最简”：把所有来电都固定拨到 1002
     string dstUri = "sip:1002@10.0.6.91"; // TODO: 根据你实际 Asterisk IP 修改
-    CallOpParam callPrm(true); // 使用默认音频设置
+
+    // 先接听来话，以便给主叫播放提示音
+    CallOpParam answerPrm(true);
+    answerPrm.statusCode = PJSIP_SC_OK;
     try {
-        cout << "Dialing " << dstUri << " on Asterisk side..." << endl;
-        outgoing->makeCall(dstUri, callPrm);
+        incoming->answer(answerPrm);
     } catch (Error &err) {
-        cout << "makeCall() failed: " << err.info() << endl;
+        cout << "Failed to answer incoming call: " << err.info() << endl;
         CallOpParam prm;
         prm.statusCode = PJSIP_SC_INTERNAL_SERVER_ERROR;
         incoming->hangup(prm);
         return;
     }
 
-    // 先给 Linphone 回 180 Ringing
-    CallOpParam ringPrm;
-    ringPrm.statusCode = PJSIP_SC_RINGING;
-    incoming->answer(ringPrm);
+    // 播放提示音 3 秒，结束后再发起呼叫
+    thread([incoming, outgoing, dstUri]() {
+        // 等待媒体就绪
+        for (int i = 0; i < 100; ++i) {
+            CallInfo ci = incoming->getInfo();
+            bool mediaReady = false;
+            for (const auto &m : ci.media) {
+                if (m.type == PJMEDIA_TYPE_AUDIO &&
+                    (m.status == PJSUA_CALL_MEDIA_ACTIVE ||
+                     m.status == PJSUA_CALL_MEDIA_REMOTE_HOLD))
+                {
+                    mediaReady = true;
+                    break;
+                }
+            }
+
+            if (mediaReady)
+                break;
+
+            pj_thread_sleep(20);
+        }
+
+        try {
+            AudioMediaPlayer player;
+            player.createPlayer("unsafe_hint.wav", PJMEDIA_FILE_NO_LOOP);
+
+            AudioMedia incomingMed = incoming->getAudioMedia(-1);
+            player.startTransmit(incomingMed);
+
+            pj_thread_sleep(3000);
+
+            player.stopTransmit(incomingMed);
+            player.close();
+        } catch (Error &err) {
+            cout << "Failed to play hint audio: " << err.info() << endl;
+        }
+
+        CallOpParam callPrm(true); // 使用默认音频设置
+        try {
+            cout << "Dialing " << dstUri << " on Asterisk side..." << endl;
+            outgoing->makeCall(dstUri, callPrm);
+        } catch (Error &err) {
+            cout << "makeCall() failed: " << err.info() << endl;
+            CallOpParam prm;
+            prm.statusCode = PJSIP_SC_INTERNAL_SERVER_ERROR;
+            incoming->hangup(prm);
+        }
+    }).detach();
 }
 
 int main() {
