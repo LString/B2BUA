@@ -43,13 +43,16 @@ public:
         try {
             ringback.createToneGenerator(8000);
 
-            ToneDesc tone[1];
-            tone[0].freq1 = 440;
-            tone[0].freq2 = 480;
-            tone[0].on_msec = 2000;
-            tone[0].off_msec = 4000;
+            ToneDesc tone;
+            tone.freq1 = 440;
+            tone.freq2 = 480;
+            tone.on_msec = 2000;
+            tone.off_msec = 4000;
 
-            ringback.play(tone, 1, true);
+            ToneDescVector tones;
+            tones.push_back(tone);
+
+            ringback.play(tones, true);
 
             AudioMedia callMed = getAudioMedia(-1);
             ringback.startTransmit(callMed);
