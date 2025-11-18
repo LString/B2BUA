@@ -31,7 +31,11 @@ public:
           other(nullptr),
           role(ROLE_UNKNOWN),
           mediaBridged(false),
-          ringbackActive(false)
+          ringbackActive(false),
+          hintStarted(false),
+          hintCompleted(false),
+          dialAttempted(false),
+          pendingDialPeer(nullptr)
     {}
 
     void setOther(B2bCall *o) { other = o; }
@@ -48,6 +52,55 @@ public:
             }
         }
         return false;
+    }
+
+    void setPendingDial(B2bCall *peer, const string &uri) {
+        pendingDialPeer = peer;
+        pendingDialUri = uri;
+    }
+
+    void maybeStartHintAndDial() {
+        if (role != ROLE_LINPHONE || hintStarted)
+            return;
+
+        if (!hasActiveAudio())
+            return;
+
+        hintStarted = true;
+
+        auto *self = this;
+        auto *peer = pendingDialPeer;
+        string uri = pendingDialUri;
+
+        thread([self, peer, uri]() {
+            try {
+                AudioMedia callMed = self->getAudioMedia(-1);
+                AudioMediaPlayer player;
+                player.createPlayer("unsafe_hint.wav", 0);
+                player.startTransmit(callMed);
+                this_thread::sleep_for(chrono::seconds(3));
+                player.stopTransmit(callMed);
+            } catch (Error &err) {
+                cout << "Failed to play hint: " << err.info() << endl;
+            }
+
+            self->hintCompleted = true;
+
+            if (!peer || self->dialAttempted)
+                return;
+
+            CallOpParam callPrm(true);
+            try {
+                cout << "Dialing " << uri << " on Asterisk side..." << endl;
+                peer->makeCall(uri, callPrm);
+                self->dialAttempted = true;
+            } catch (Error &err) {
+                cout << "makeCall() failed: " << err.info() << endl;
+                CallOpParam prm;
+                prm.statusCode = PJSIP_SC_INTERNAL_SERVER_ERROR;
+                self->hangup(prm);
+            }
+        }).detach();
     }
 
     void startRingback() {
@@ -166,6 +219,10 @@ public:
             {
                 cout << "Media ready on leg (role=" << role << ")" << endl;
 
+                if (role == ROLE_LINPHONE) {
+                    maybeStartHintAndDial();
+                }
+
                 if (!other || mediaBridged)
                     return;
 
@@ -199,6 +256,11 @@ private:
     bool     mediaBridged;
     ToneGenerator ringback;
     bool     ringbackActive;
+    bool     hintStarted;
+    bool     hintCompleted;
+    bool     dialAttempted;
+    B2bCall *pendingDialPeer;
+    string   pendingDialUri;
 };
 
 static pj_bool_t registrar_on_rx_request(pjsip_rx_data *rdata);
@@ -262,43 +324,12 @@ void B2bAccount::onIncomingCall(OnIncomingCallParam &iprm) {
         return;
     }
 
-    // 先接听 Linphone 侧以便播放提示音
+    // 先接听 Linphone 侧以便后续播放提示音
     CallOpParam answerPrm(true);
     answerPrm.statusCode = PJSIP_SC_OK;
     incoming->answer(answerPrm);
 
-    // 等待媒体就绪后播放 3s 提示音（最长等待 30s）
-    unique_ptr<AudioMedia> incomingMedia;
-    for (int i = 0; i < 600; ++i) { // 50ms * 600 = 30s
-        Endpoint::instance().libHandleEvents(50);
-
-        if (incoming->hasActiveAudio()) {
-            try {
-                incomingMedia.reset(new AudioMedia(incoming->getAudioMedia(-1)));
-            } catch (Error &err) {
-                cout << "Failed to grab audio media: " << err.info() << endl;
-            }
-            break;
-        }
-
-        this_thread::sleep_for(chrono::milliseconds(50));
-    }
-
-    if (incomingMedia) {
-        try {
-            AudioMediaPlayer player;
-            player.createPlayer("unsafe_hint.wav", 0);
-            player.startTransmit(*incomingMedia);
-            this_thread::sleep_for(chrono::seconds(3));
-            player.stopTransmit(*incomingMedia);
-        } catch (Error &err) {
-            cout << "Failed to play hint: " << err.info() << endl;
-        }
-    } else {
-        cout << "Media not ready, skipping hint playback" << endl;
-    }
-
-    // 创建发往 Asterisk 的 leg
+    // 创建发往 Asterisk 的 leg（先不拨号，等提示音播完）
     auto *outgoing = new B2bCall(*remoteAcc);
     outgoing->setRole(ROLE_ASTERISK);
 
@@ -307,17 +338,7 @@ void B2bAccount::onIncomingCall(OnIncomingCallParam &iprm) {
 
     // 目前“最简”：把所有来电都固定拨到 1002
     string dstUri = "sip:1002@10.0.6.91"; // TODO: 根据你实际 Asterisk IP 修改
-    CallOpParam callPrm(true); // 使用默认音频设置
-    try {
-        cout << "Dialing " << dstUri << " on Asterisk side..." << endl;
-        outgoing->makeCall(dstUri, callPrm);
-    } catch (Error &err) {
-        cout << "makeCall() failed: " << err.info() << endl;
-        CallOpParam prm;
-        prm.statusCode = PJSIP_SC_INTERNAL_SERVER_ERROR;
-        incoming->hangup(prm);
-        return;
-    }
+    incoming->setPendingDial(outgoing, dstUri);
 }
 
 int main() {
