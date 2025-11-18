@@ -27,11 +27,18 @@ public:
         : Call(acc, call_id),
           other(nullptr),
           role(ROLE_UNKNOWN),
-          mediaBridged(false)
+          mediaBridged(false),
+          hintPending(false),
+          hintPlayed(false),
+          dialed(false)
     {}
 
     void setOther(B2bCall *o) { other = o; }
     void setRole(LegRole r)   { role = r; }
+    void enableHintAndDeferredDial(const string &dstUri) {
+        hintPending    = true;
+        deferredDstUri = dstUri;
+    }
 
     virtual void onCallState(OnCallStateParam &prm) override {
         CallInfo ci = getInfo();
@@ -72,6 +79,39 @@ public:
     virtual void onCallMediaState(OnCallMediaStateParam &prm) override {
         CallInfo ci = getInfo();
 
+        // 播放提示音并在结束后拨打 Asterisk 侧
+        if (role == ROLE_LINPHONE && hintPending && !hintPlayed && other) {
+            try {
+                hintPlayer.createPlayer("unsafe_hint.wav", PJMEDIA_FILE_NO_LOOP);
+                AudioMedia callMed = getAudioMedia(-1);
+                hintPlayer.startTransmit(callMed);
+                cout << "Playing unsafe_hint.wav to caller for 3 seconds" << endl;
+                pj_thread_sleep(3000);
+                hintPlayer.stopTransmit(callMed);
+                hintPlayed = true;
+
+                if (!dialed) {
+                    CallOpParam callPrm(true);
+                    cout << "Dialing " << deferredDstUri << " on Asterisk side..." << endl;
+                    try {
+                        other->makeCall(deferredDstUri, callPrm);
+                        dialed = true;
+                    } catch (Error &err) {
+                        cout << "makeCall() failed: " << err.info() << endl;
+                        CallOpParam prm;
+                        prm.statusCode = PJSIP_SC_INTERNAL_SERVER_ERROR;
+                        hangup(prm);
+                    }
+
+                    CallOpParam ringPrm;
+                    ringPrm.statusCode = PJSIP_SC_RINGING;
+                    answer(ringPrm);
+                }
+            } catch (Error &err) {
+                cout << "Failed to play hint or dial: " << err.info() << endl;
+            }
+        }
+
         for (unsigned i = 0; i < ci.media.size(); ++i) {
             if (ci.media[i].type == PJMEDIA_TYPE_AUDIO &&
                 (ci.media[i].status == PJSUA_CALL_MEDIA_ACTIVE ||
@@ -107,6 +147,11 @@ private:
     B2bCall *other;
     LegRole  role;
     bool     mediaBridged;
+    bool     hintPending;
+    bool     hintPlayed;
+    bool     dialed;
+    string   deferredDstUri;
+    AudioMediaPlayer hintPlayer;
 };
 
 static pj_bool_t registrar_on_rx_request(pjsip_rx_data *rdata);
@@ -169,38 +214,7 @@ void B2bAccount::onIncomingCall(OnIncomingCallParam &iprm) {
         return;
     }
 
-    // 向主叫播放提示音（3 秒），暂不向 Asterisk 拨号
-    CallOpParam progressPrm(true);
-    progressPrm.statusCode = PJSIP_SC_PROGRESS; // 183 Session Progress，携带早期媒体
-    incoming->answer(progressPrm);
-
-    AudioMediaPlayer hintPlayer;
-    bool mediaReady = false;
-    try {
-        hintPlayer.createPlayer("unsafe_hint.wav", PJMEDIA_FILE_NO_LOOP);
-        // 等待呼叫媒体就绪后再开始播放
-        for (int i = 0; i < 40; ++i) { // 最长等待 2 秒
-            if (incoming->hasMedia()) {
-                mediaReady = true;
-                break;
-            }
-            pj_thread_sleep(50);
-        }
-
-        if (mediaReady) {
-            AudioMedia callMed = incoming->getAudioMedia(-1);
-            hintPlayer.startTransmit(callMed);
-            cout << "Playing unsafe_hint.wav to caller for 3 seconds" << endl;
-            pj_thread_sleep(3000);
-            hintPlayer.stopTransmit(callMed);
-        } else {
-            cout << "Media not ready, skipping hint playback" << endl;
-        }
-    } catch (Error &err) {
-        cout << "Failed to play hint: " << err.info() << endl;
-    }
-
-    // 创建发往 Asterisk 的 leg
+    // 创建发往 Asterisk 的 leg（稍后拨号）
     auto *outgoing = new B2bCall(*remoteAcc);
     outgoing->setRole(ROLE_ASTERISK);
 
@@ -209,22 +223,12 @@ void B2bAccount::onIncomingCall(OnIncomingCallParam &iprm) {
 
     // 目前“最简”：把所有来电都固定拨到 1002
     string dstUri = "sip:1002@10.0.6.91"; // TODO: 根据你实际 Asterisk IP 修改
-    CallOpParam callPrm(true); // 使用默认音频设置
-    try {
-        cout << "Dialing " << dstUri << " on Asterisk side..." << endl;
-        outgoing->makeCall(dstUri, callPrm);
-    } catch (Error &err) {
-        cout << "makeCall() failed: " << err.info() << endl;
-        CallOpParam prm;
-        prm.statusCode = PJSIP_SC_INTERNAL_SERVER_ERROR;
-        incoming->hangup(prm);
-        return;
-    }
+    incoming->enableHintAndDeferredDial(dstUri);
 
-    // 播放提示音结束后返回 180，让主叫听到正常的回铃音
-    CallOpParam ringPrm;
-    ringPrm.statusCode = PJSIP_SC_RINGING;
-    incoming->answer(ringPrm);
+    // 183 Session Progress，携带早期媒体，待媒体建立后播放提示音
+    CallOpParam progressPrm(true);
+    progressPrm.statusCode = PJSIP_SC_PROGRESS;
+    incoming->answer(progressPrm);
 }
 
 int main() {
