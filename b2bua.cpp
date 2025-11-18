@@ -97,6 +97,7 @@ public:
 
                 if (role == ROLE_LINPHONE && promptNeeded && !promptStarted) {
                     try {
+                        cout << "Starting prompt playback: " << promptFile << endl;
                         promptPlayer.createPlayer(promptFile);
 
                         AudioMedia callMed = getAudioMedia(i);
@@ -107,12 +108,14 @@ public:
                             while (promptPlayer.isPlaying()) {
                                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
                             }
+                            cout << "Prompt playback finished" << endl;
                             bridgeAllowed = true;
                             promptNeeded = false;
                             startPendingDial();
                         }).detach();
                     } catch (Error &err) {
-                        cout << "Failed to play prompt: " << err.info() << endl;
+                        cout << "Failed to play prompt '" << promptFile
+                             << "': " << err.info() << endl;
                         bridgeAllowed = true;
                         promptNeeded = false;
                         startPendingDial();
@@ -228,7 +231,8 @@ void B2bAccount::onIncomingCall(OnIncomingCallParam &iprm) {
 
     auto *incoming = new B2bCall(*this, iprm.callId);
     incoming->setRole(ROLE_LINPHONE);
-    incoming->enablePrompt("unsafe_hit.wav");
+    // 播放安全提示音后再继续呼叫
+    incoming->enablePrompt("unsafe_hint.wav");
 
     if (!remoteAcc) {
         cout << "No remote (Asterisk) account configured, rejecting call" << endl;
