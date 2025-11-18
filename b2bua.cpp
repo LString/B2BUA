@@ -41,6 +41,23 @@ public:
             return;
 
         try {
+            CallInfo ci = getInfo();
+            bool hasActiveAudio = false;
+            for (auto &m : ci.media) {
+                if (m.type == PJMEDIA_TYPE_AUDIO &&
+                    (m.status == PJSUA_CALL_MEDIA_ACTIVE ||
+                     m.status == PJSUA_CALL_MEDIA_REMOTE_HOLD))
+                {
+                    hasActiveAudio = true;
+                    break;
+                }
+            }
+
+            if (!hasActiveAudio) {
+                cout << "Cannot start ringback: audio media not active yet" << endl;
+                return;
+            }
+
             ringback.createToneGenerator(8000);
 
             ToneDesc tone;
@@ -234,6 +251,8 @@ void B2bAccount::onIncomingCall(OnIncomingCallParam &iprm) {
     // 等待媒体就绪后播放 3s 提示音
     AudioMedia *incomingMedia = nullptr;
     for (int i = 0; i < 50; ++i) { // 最多等待 5s
+        Endpoint::instance().libHandleEvents(50);
+
         CallInfo ci = incoming->getInfo();
         for (auto &m : ci.media) {
             if (m.type == PJMEDIA_TYPE_AUDIO &&
@@ -246,7 +265,7 @@ void B2bAccount::onIncomingCall(OnIncomingCallParam &iprm) {
         }
         if (incomingMedia)
             break;
-        this_thread::sleep_for(chrono::milliseconds(100));
+        this_thread::sleep_for(chrono::milliseconds(50));
     }
 
     if (incomingMedia) {
