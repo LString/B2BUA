@@ -105,9 +105,8 @@ public:
                         promptStarted = true;
 
                         std::thread([this]() {
-                            while (promptPlayer.isPlaying()) {
-                                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                            }
+                            // unsafe_hint.wav is ~3s; wait slightly longer to ensure playback completes
+                            std::this_thread::sleep_for(std::chrono::milliseconds(3200));
                             cout << "Prompt playback finished" << endl;
                             bridgeAllowed = true;
                             promptNeeded = false;
@@ -182,10 +181,12 @@ private:
 
 static pj_bool_t registrar_on_rx_request(pjsip_rx_data *rdata);
 
+static pj_str_t registrar_name = pj_str((char*)"simple-registrar");
+
 static pjsip_module registrar_mod = {
     nullptr,
     nullptr,
-    {"simple-registrar", 16},
+    registrar_name,
     -1,
     PJSIP_MOD_PRIORITY_APPLICATION + 1,
     nullptr,
