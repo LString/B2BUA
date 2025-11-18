@@ -3,6 +3,7 @@
 #include <iostream>
 #include <thread>
 #include <chrono>
+#include <memory>
 
 using namespace pj;
 using namespace std;
@@ -35,6 +36,19 @@ public:
 
     void setOther(B2bCall *o) { other = o; }
     void setRole(LegRole r)   { role = r; }
+
+    bool hasActiveAudio() {
+        CallInfo ci = getInfo();
+        for (auto &m : ci.media) {
+            if (m.type == PJMEDIA_TYPE_AUDIO &&
+                (m.status == PJSUA_CALL_MEDIA_ACTIVE ||
+                 m.status == PJSUA_CALL_MEDIA_REMOTE_HOLD))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
 
     void startRingback() {
         if (ringbackActive)
@@ -103,6 +117,11 @@ public:
         CallInfo ci = getInfo();
         cout << "[Call " << ci.callIdString << "] state=" << ci.stateText
              << " (" << ci.state << ")" << endl;
+
+        // Asterisk 那一侧进入 EARLY，开始给 Linphone 侧播放本地回铃
+        if (ci.state == PJSIP_INV_STATE_EARLY && role == ROLE_ASTERISK && other) {
+            other->startRingback();
+        }
 
         // Asterisk 那一侧接通后，给 Linphone 那一侧发 200 OK
         if (ci.state == PJSIP_INV_STATE_CONFIRMED && role == ROLE_ASTERISK) {
@@ -248,39 +267,33 @@ void B2bAccount::onIncomingCall(OnIncomingCallParam &iprm) {
     answerPrm.statusCode = PJSIP_SC_OK;
     incoming->answer(answerPrm);
 
-    // 等待媒体就绪后播放 3s 提示音
-    AudioMedia *incomingMedia = nullptr;
-    for (int i = 0; i < 50; ++i) { // 最多等待 5s
+    // 等待媒体就绪后播放 3s 提示音（最长等待 30s）
+    unique_ptr<AudioMedia> incomingMedia;
+    for (int i = 0; i < 600; ++i) { // 50ms * 600 = 30s
         Endpoint::instance().libHandleEvents(50);
 
-        CallInfo ci = incoming->getInfo();
-        for (auto &m : ci.media) {
-            if (m.type == PJMEDIA_TYPE_AUDIO &&
-                (m.status == PJSUA_CALL_MEDIA_ACTIVE ||
-                 m.status == PJSUA_CALL_MEDIA_REMOTE_HOLD))
-            {
-                incomingMedia = new AudioMedia(incoming->getAudioMedia(-1));
-                break;
+        if (incoming->hasActiveAudio()) {
+            try {
+                incomingMedia.reset(new AudioMedia(incoming->getAudioMedia(-1)));
+            } catch (Error &err) {
+                cout << "Failed to grab audio media: " << err.info() << endl;
             }
-        }
-        if (incomingMedia)
             break;
+        }
+
         this_thread::sleep_for(chrono::milliseconds(50));
     }
 
     if (incomingMedia) {
-            try {
-                AudioMediaPlayer player;
-                player.createPlayer("unsafe_hint.wav", 0);
-                player.startTransmit(*incomingMedia);
-                this_thread::sleep_for(chrono::seconds(3));
-                player.stopTransmit(*incomingMedia);
-            } catch (Error &err) {
-                cout << "Failed to play hint: " << err.info() << endl;
-            }
-
-        delete incomingMedia;
-        incomingMedia = nullptr;
+        try {
+            AudioMediaPlayer player;
+            player.createPlayer("unsafe_hint.wav", 0);
+            player.startTransmit(*incomingMedia);
+            this_thread::sleep_for(chrono::seconds(3));
+            player.stopTransmit(*incomingMedia);
+        } catch (Error &err) {
+            cout << "Failed to play hint: " << err.info() << endl;
+        }
     } else {
         cout << "Media not ready, skipping hint playback" << endl;
     }
@@ -298,7 +311,6 @@ void B2bAccount::onIncomingCall(OnIncomingCallParam &iprm) {
     try {
         cout << "Dialing " << dstUri << " on Asterisk side..." << endl;
         outgoing->makeCall(dstUri, callPrm);
-        incoming->startRingback();
     } catch (Error &err) {
         cout << "makeCall() failed: " << err.info() << endl;
         CallOpParam prm;
