@@ -1,5 +1,7 @@
 #include <pjsua-lib/pjsua.h>
 #include <pjsua2.hpp>
+#include <pj/os.h>
+#include <pj/errno.h>
 #include <chrono>
 #include <iostream>
 #include <thread>
@@ -105,6 +107,17 @@ public:
                         promptStarted = true;
 
                         std::thread([this]() {
+                            pj_thread_desc desc;
+                            pj_thread_t *this_thread = nullptr;
+                            pj_status_t pjStatus = pj_thread_register("prompt_cb", desc, &this_thread);
+                            if (pjStatus != PJ_SUCCESS) {
+                                char errbuf[PJ_ERR_MSG_SIZE];
+                                pj_strerror(pjStatus, errbuf, sizeof(errbuf));
+                                cout << "Failed to register prompt thread with PJLIB: "
+                                     << errbuf << endl;
+                                return;
+                            }
+
                             // unsafe_hint.wav is ~3s; wait slightly longer to ensure playback completes
                             std::this_thread::sleep_for(std::chrono::milliseconds(3200));
                             cout << "Prompt playback finished" << endl;
