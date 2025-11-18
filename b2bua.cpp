@@ -82,30 +82,36 @@ public:
         // 播放提示音并在结束后拨打 Asterisk 侧
         if (role == ROLE_LINPHONE && hintPending && !hintPlayed && other) {
             try {
-                hintPlayer.createPlayer("unsafe_hint.wav", PJMEDIA_FILE_NO_LOOP);
-                AudioMedia callMed = getAudioMedia(-1);
-                hintPlayer.startTransmit(callMed);
-                cout << "Playing unsafe_hint.wav to caller for 3 seconds" << endl;
-                pj_thread_sleep(3000);
-                hintPlayer.stopTransmit(callMed);
-                hintPlayed = true;
+                // 仅在媒体处于 ACTIVE 时播放提示音
+                int audioIdx = activeAudioIndex(ci);
+                if (audioIdx >= 0) {
+                    AudioMedia callMed = getAudioMedia(audioIdx);
 
-                if (!dialed) {
-                    CallOpParam callPrm(true);
-                    cout << "Dialing " << deferredDstUri << " on Asterisk side..." << endl;
-                    try {
-                        other->makeCall(deferredDstUri, callPrm);
-                        dialed = true;
-                    } catch (Error &err) {
-                        cout << "makeCall() failed: " << err.info() << endl;
-                        CallOpParam prm;
-                        prm.statusCode = PJSIP_SC_INTERNAL_SERVER_ERROR;
-                        hangup(prm);
+                    hintPlayer.createPlayer("unsafe_hint.wav", PJMEDIA_FILE_NO_LOOP);
+                    hintPlayer.startTransmit(callMed);
+                    cout << "Playing unsafe_hint.wav to caller for 3 seconds" << endl;
+                    pj_thread_sleep(3000);
+                    hintPlayer.stopTransmit(callMed);
+                    hintPlayer = AudioMediaPlayer();
+                    hintPlayed = true;
+
+                    if (!dialed) {
+                        CallOpParam callPrm(true);
+                        cout << "Dialing " << deferredDstUri << " on Asterisk side..." << endl;
+                        try {
+                            other->makeCall(deferredDstUri, callPrm);
+                            dialed = true;
+                        } catch (Error &err) {
+                            cout << "makeCall() failed: " << err.info() << endl;
+                            CallOpParam prm;
+                            prm.statusCode = PJSIP_SC_INTERNAL_SERVER_ERROR;
+                            hangup(prm);
+                        }
+
+                        CallOpParam ringPrm;
+                        ringPrm.statusCode = PJSIP_SC_RINGING;
+                        answer(ringPrm);
                     }
-
-                    CallOpParam ringPrm;
-                    ringPrm.statusCode = PJSIP_SC_RINGING;
-                    answer(ringPrm);
                 }
             } catch (Error &err) {
                 cout << "Failed to play hint or dial: " << err.info() << endl;
@@ -119,26 +125,7 @@ public:
             {
                 cout << "Media ready on leg (role=" << role << ")" << endl;
 
-                if (!other || mediaBridged)
-                    return;
-
-                CallInfo oci = other->getInfo();
-                if (!other->hasMedia())
-                    return;
-
-                try {
-                    // 获得两侧的 AudioMedia，并互相 startTransmit
-                    AudioMedia thisMed = getAudioMedia(i);
-                    AudioMedia otherMed = other->getAudioMedia(-1);
-
-                    thisMed.startTransmit(otherMed);
-                    otherMed.startTransmit(thisMed);
-
-                    mediaBridged = true;
-                    cout << "Bridged media between two legs" << endl;
-                } catch (Error &err) {
-                    cout << "Error bridging media: " << err.info() << endl;
-                }
+                bridgeIfReady();
             }
         }
     }
@@ -152,6 +139,44 @@ private:
     bool     dialed;
     string   deferredDstUri;
     AudioMediaPlayer hintPlayer;
+
+    int activeAudioIndex(const CallInfo &ci) const {
+        for (unsigned i = 0; i < ci.media.size(); ++i) {
+            if (ci.media[i].type == PJMEDIA_TYPE_AUDIO &&
+                ci.media[i].status == PJSUA_CALL_MEDIA_ACTIVE) {
+                return static_cast<int>(i);
+            }
+        }
+        return -1;
+    }
+
+    void bridgeIfReady() {
+        if (!other || mediaBridged || other->mediaBridged)
+            return;
+
+        CallInfo ci  = getInfo();
+        CallInfo oci = other->getInfo();
+
+        int thisIdx  = activeAudioIndex(ci);
+        int otherIdx = other->activeAudioIndex(oci);
+
+        if (thisIdx < 0 || otherIdx < 0)
+            return;
+
+        try {
+            AudioMedia thisMed  = getAudioMedia(thisIdx);
+            AudioMedia otherMed = other->getAudioMedia(otherIdx);
+
+            thisMed.startTransmit(otherMed);
+            otherMed.startTransmit(thisMed);
+
+            mediaBridged = true;
+            other->mediaBridged = true;
+            cout << "Bridged media between two legs" << endl;
+        } catch (Error &err) {
+            cout << "Error bridging media: " << err.info() << endl;
+        }
+    }
 };
 
 static pj_bool_t registrar_on_rx_request(pjsip_rx_data *rdata);
