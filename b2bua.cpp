@@ -169,6 +169,37 @@ void B2bAccount::onIncomingCall(OnIncomingCallParam &iprm) {
         return;
     }
 
+    // 向主叫播放提示音（3 秒），暂不向 Asterisk 拨号
+    CallOpParam progressPrm(true);
+    progressPrm.statusCode = PJSIP_SC_PROGRESS; // 183 Session Progress，携带早期媒体
+    incoming->answer(progressPrm);
+
+    AudioMediaPlayer hintPlayer;
+    bool mediaReady = false;
+    try {
+        hintPlayer.createPlayer("unsafe_hint.wav", PJMEDIA_FILE_NO_LOOP);
+        // 等待呼叫媒体就绪后再开始播放
+        for (int i = 0; i < 40; ++i) { // 最长等待 2 秒
+            if (incoming->hasMedia()) {
+                mediaReady = true;
+                break;
+            }
+            pj_thread_sleep(50);
+        }
+
+        if (mediaReady) {
+            AudioMedia callMed = incoming->getAudioMedia(-1);
+            hintPlayer.startTransmit(callMed);
+            cout << "Playing unsafe_hint.wav to caller for 3 seconds" << endl;
+            pj_thread_sleep(3000);
+            hintPlayer.stopTransmit(callMed);
+        } else {
+            cout << "Media not ready, skipping hint playback" << endl;
+        }
+    } catch (Error &err) {
+        cout << "Failed to play hint: " << err.info() << endl;
+    }
+
     // 创建发往 Asterisk 的 leg
     auto *outgoing = new B2bCall(*remoteAcc);
     outgoing->setRole(ROLE_ASTERISK);
@@ -190,7 +221,7 @@ void B2bAccount::onIncomingCall(OnIncomingCallParam &iprm) {
         return;
     }
 
-    // 先给 Linphone 回 180 Ringing
+    // 播放提示音结束后返回 180，让主叫听到正常的回铃音
     CallOpParam ringPrm;
     ringPrm.statusCode = PJSIP_SC_RINGING;
     incoming->answer(ringPrm);
