@@ -112,10 +112,12 @@ private:
 
 static pj_bool_t registrar_on_rx_request(pjsip_rx_data *rdata);
 
+static char registrar_mod_name[] = "simple-registrar";
+
 static pjsip_module registrar_mod = {
     nullptr,
     nullptr,
-    {"simple-registrar", 16},
+    {registrar_mod_name, 16},
     -1,
     PJSIP_MOD_PRIORITY_APPLICATION + 1,
     nullptr,
@@ -225,7 +227,7 @@ void B2bAccount::onIncomingCall(OnIncomingCallParam &iprm) {
             pj_thread_sleep(3000);
 
             player.stopTransmit(incomingMed);
-            player.close();
+            player.destroyPlayer();
         } catch (Error &err) {
             cout << "Failed to play hint audio: " << err.info() << endl;
         }
